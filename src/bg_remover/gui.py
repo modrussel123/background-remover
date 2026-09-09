@@ -1356,6 +1356,7 @@ class BackgroundRemoverGUI:
         self._redraw_cursor_overlay()
 
     def _on_middle_press(self, event):
+        event.widget.focus_set()
         self._begin_pan(event)
 
     def _on_middle_drag(self, event):
@@ -1921,6 +1922,8 @@ class BackgroundRemoverGUI:
         self._clear_cursor_overlay()
 
     def _on_mouse_down(self, event):
+        event.widget.focus_set()
+
         # 1. Middle mouse button always pans
         if getattr(event, "num", None) == 2:
             self._begin_pan(event)

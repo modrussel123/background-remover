@@ -43,11 +43,13 @@ def resolve_shortcut(
             return "zoom_out"
         return None
 
-    if alt or editable:
+    if alt:
         return None
 
     if key == "f5":
         return "process"
+    if editable:
+        return None
     if key == "bracketleft":
         return "brush_smaller"
     if key == "bracketright":

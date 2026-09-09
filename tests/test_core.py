@@ -461,6 +461,9 @@ class TestKeyboardShortcuts:
         assert resolve_shortcut(
             "w", control=False, shift=False, alt=False, editable=True
         ) is None
+        assert resolve_shortcut(
+            "F5", control=False, shift=False, alt=False, editable=True
+        ) == "process"
 
     @pytest.mark.parametrize(
         ("keysym", "shift", "action"),

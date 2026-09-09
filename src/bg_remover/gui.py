@@ -26,6 +26,7 @@ except ImportError:
 
 from bg_remover.core import BackgroundRemover, AVAILABLE_MODELS, DEFAULT_MODEL
 from bg_remover.editing import erase_connected_color, get_drag_sample_points
+from bg_remover.shortcuts import resolve_shortcut
 from bg_remover.utils import (
     get_device_info,
     get_file_info,
@@ -95,6 +96,8 @@ class BackgroundRemoverGUI:
         self._is_processing = False
         self._spinner_angle = 0
         self._spinner_timer = None
+        self._processing_device = "CPU"
+        self._device_info = None
 
         # Manual editing state
         self.selected_tool = tk.StringVar(value=TOOL_ERASER)
@@ -200,23 +203,23 @@ class BackgroundRemoverGUI:
 
         ttk.Label(left_controls, text="Device:").pack(side=tk.LEFT, padx=(0, 5))
         self.device_var = tk.StringVar(value="auto")
-        device_menu = ttk.Combobox(
+        self.device_combo = ttk.Combobox(
             left_controls,
             textvariable=self.device_var,
             values=["auto", "cpu", "cuda"],
             state="readonly",
             width=8,
         )
-        device_menu.pack(side=tk.LEFT, padx=(0, 6))
+        self.device_combo.pack(side=tk.LEFT, padx=(0, 6))
+        self.device_combo.bind("<<ComboboxSelected>>", self._on_device_change)
 
-        # CUDA status indicator
-        self.cuda_status_var = tk.StringVar(value="")
-        self.cuda_status_lbl = ttk.Label(
-            left_controls, textvariable=self.cuda_status_var,
+        self.compute_status_var = tk.StringVar(value="Detecting device...")
+        self.compute_status_lbl = ttk.Label(
+            left_controls, textvariable=self.compute_status_var,
             foreground="#aaaaaa", font=("Segoe UI", 8),
         )
-        self.cuda_status_lbl.pack(side=tk.LEFT, padx=(0, 10))
-        self._update_cuda_status()
+        self.compute_status_lbl.pack(side=tk.LEFT, padx=(0, 10))
+        self._update_device_status()
 
         ttk.Label(left_controls, text="Quality:").pack(side=tk.LEFT, padx=(0, 4))
         self.quality_var = tk.StringVar(value="Maximum Quality")
@@ -427,7 +430,7 @@ class BackgroundRemoverGUI:
 
         # Hint (right side — only if space allows)
         ttk.Label(view_row,
-                  text="Wheel=Zoom  Ctrl+Wheel=Brush  Space+Drag=Pan",
+                  text="X/O/W/M/C/H=Tools  [ ]=Brush  Ctrl+O/S/Z  F5=Process",
                   foreground="#9aa0a6", font=("Segoe UI", 8),
                   ).pack(side=tk.RIGHT, padx=(0, 4))
 
@@ -483,8 +486,8 @@ class BackgroundRemoverGUI:
         status_frame.pack(fill=tk.X)
 
         self.status_var = tk.StringVar(
-            value="Ready. Wheel=Zoom / Ctrl+Wheel=Brush / Alt+Drag=Pan. "
-                  "ESC cancels Wand or Compare."
+            value="Ready. X/O/W/M/C/H select tools. Wheel=Zoom; "
+                  "Ctrl+Wheel or [ ]=Brush; Space+Drag=Pan."
         )
         self.status_label = ttk.Label(
             status_frame, textvariable=self.status_var, style="Status.TLabel"
@@ -530,23 +533,11 @@ class BackgroundRemoverGUI:
         self.root.bind("<KeyPress-space>", self._on_space_down)
         self.root.bind("<KeyRelease-space>", self._on_space_up)
         self.root.bind("<Escape>", self._on_escape)
-        self.root.bind("<KeyPress-Alt_L>", lambda e: setattr(self, "_alt_held", True))
-        self.root.bind("<KeyRelease-Alt_L>", lambda e: setattr(self, "_alt_held", False))
-        self.root.bind("<KeyPress-Alt_R>", lambda e: setattr(self, "_alt_held", True))
-        self.root.bind("<KeyRelease-Alt_R>", lambda e: setattr(self, "_alt_held", False))
-
-        # Ctrl+0/1/plus/minus zoom shortcuts (Photoshop-style)
-        self.root.bind("<Control-Key-0>", lambda e: (self._zoom_fit(), "break"))
-        self.root.bind("<Control-Key-1>", lambda e: (self._zoom_set(1.0), "break"))
-        self.root.bind("<Control-plus>",
-                        lambda e: (self._zoom_at(self._zoom_factor * 1.25, None),
-                                    "break"))
-        self.root.bind("<Control-equal>",
-                        lambda e: (self._zoom_at(self._zoom_factor * 1.25, None),
-                                    "break"))
-        self.root.bind("<Control-minus>",
-                        lambda e: (self._zoom_at(self._zoom_factor / 1.25, None),
-                                    "break"))
+        self.root.bind("<KeyPress-Alt_L>", self._on_alt_down)
+        self.root.bind("<KeyRelease-Alt_L>", self._on_alt_up)
+        self.root.bind("<KeyPress-Alt_R>", self._on_alt_down)
+        self.root.bind("<KeyRelease-Alt_R>", self._on_alt_up)
+        self.root.bind("<KeyPress>", self._on_keyboard_shortcut, add="+")
 
     def _center_window(self):
         self.root.update_idletasks()
@@ -685,31 +676,76 @@ class BackgroundRemoverGUI:
         self.status_var.set(f"Background pattern set to: {self.bg_pattern_var.get()}")
 
     # ------------------------------------------------------------------
-    # CUDA status + model description helpers
+    # Compute status + model description helpers
     # ------------------------------------------------------------------
-    def _update_cuda_status(self):
-        """Check CUDA/GPU availability and update the status label."""
+    def _update_device_status(self):
+        """Detect providers and show which device auto-selection will use."""
         def _check():
             try:
-                import onnxruntime as ort
-                providers = ort.get_available_providers()
-                if "CUDAExecutionProvider" in providers:
-                    self.root.after(0, lambda: (
-                        self.cuda_status_var.set("GPU: CUDA ready"),
-                        self.cuda_status_lbl.config(foreground="#4aff8a"),
-                    ))
-                else:
-                    self.root.after(0, lambda: (
-                        self.cuda_status_var.set("GPU: CPU only"),
-                        self.cuda_status_lbl.config(foreground="#ffaa44"),
-                    ))
+                info = get_device_info()
+                self.root.after(0, lambda: self._apply_device_status(info))
             except Exception:
                 self.root.after(0, lambda: (
-                    self.cuda_status_var.set("GPU: unavailable"),
-                    self.cuda_status_lbl.config(foreground="#ff5555"),
+                    self.compute_status_var.set("Active: CPU"),
+                    self.compute_status_lbl.config(foreground="#ffaa44"),
                 ))
-        import threading
         threading.Thread(target=_check, daemon=True).start()
+
+    def _apply_device_status(self, info, active_device=None):
+        self._device_info = info
+        selected = self.device_var.get()
+        cuda_available = bool(info["cuda_available"])
+
+        if active_device is not None:
+            if active_device == "cuda":
+                text = "Active: GPU (CUDA)"
+                color = "#4aff8a"
+            else:
+                text = "Active: CPU"
+                color = "#ffaa44"
+        elif selected == "cuda":
+            if cuda_available:
+                text = "Selected: GPU (CUDA)"
+                color = "#4aff8a"
+            else:
+                text = "CUDA unavailable - will use CPU"
+                color = "#ff7777"
+        elif selected == "cpu":
+            text = "Selected: CPU"
+            color = "#ffaa44"
+        elif cuda_available:
+            text = "Auto: GPU (CUDA)"
+            color = "#4aff8a"
+        else:
+            text = "Auto: CPU"
+            color = "#ffaa44"
+
+        self.compute_status_var.set(text)
+        self.compute_status_lbl.config(foreground=color)
+
+    def _on_device_change(self, _event=None):
+        self._remover_config = None
+        if self._device_info is not None:
+            self._apply_device_status(self._device_info)
+
+    def _processing_device_for(self, remover):
+        device = remover.active_device
+        if (
+            device == "cuda"
+            and self._device_info is not None
+            and not self._device_info["cuda_available"]
+        ):
+            return "cpu"
+        return device
+
+    def _on_session_ready(self, active_device):
+        if not self._is_processing:
+            return
+        self._processing_device = (
+            "GPU (CUDA)" if active_device == "cuda" else "CPU"
+        )
+        if self._device_info is not None:
+            self._apply_device_status(self._device_info, active_device)
 
     def _on_model_change(self, _event=None):
         """Update model description label when user picks a different model."""
@@ -717,9 +753,16 @@ class BackgroundRemoverGUI:
         desc = MODEL_DESCRIPTIONS.get(model, "")
         self.model_desc_var.set(desc)
 
-    def _start_processing_indicator(self, message: str = "Removing background with AI..."):
+    def _start_processing_indicator(
+        self,
+        message: str = "Removing background with AI...",
+        device: str = "cpu",
+    ):
         """Show active animated spinner and indeterminate progress bar."""
         self._is_processing = True
+        self._processing_device = (
+            "GPU (CUDA)" if device == "cuda" else "CPU"
+        )
         self.btn_process.config(text="⏳ Processing...", state=tk.DISABLED)
         self.btn_save.config(state=tk.DISABLED)
         self.btn_reset_mask.config(state=tk.DISABLED)
@@ -813,12 +856,11 @@ class BackgroundRemoverGUI:
             tags="loading_overlay",
         )
 
-        # Subtitle with model and device
+        # Subtitle with model and active device
         model_name = self.model_var.get()
-        dev = self.device_var.get().upper()
         c.create_text(
             cx, cy + 38,
-            text=f"Model: {model_name} • Device: {dev}",
+            text=f"Model: {model_name} • Device: {self._processing_device}",
             fill="#8fa0b5", font=("Segoe UI", 9),
             tags="loading_overlay",
         )
@@ -835,24 +877,48 @@ class BackgroundRemoverGUI:
         if self.selected_tool.get() == TOOL_COMPARE:
             self.selected_tool.set(TOOL_ERASER)
             self._on_tool_change()
-        self._start_processing_indicator("Processing with AI...")
+        try:
+            remover = self._get_remover()
+        except Exception as error:
+            self.status_var.set(f"Error: {error}")
+            messagebox.showerror(
+                "Processing Error",
+                f"Failed to start background removal:\n{error}",
+            )
+            return
+        self._start_processing_indicator(
+            "Processing with AI...",
+            self._processing_device_for(remover),
+        )
 
         def worker():
             try:
-                remover = self._get_remover()
+                active_device = remover.prepare_session()
+                self.root.after(
+                    0,
+                    lambda: self._on_session_ready(active_device),
+                )
                 out = remover.remove_background(self.current_file)
-                self.current_image = out.convert("RGBA")
-                self.ai_result_image = self.current_image.copy()
-                self._undo_stack.clear()
-                self._result_version += 1
-                self.root.after(0, lambda: self._on_process_complete())
+                self.root.after(
+                    0,
+                    lambda: self._on_process_complete(
+                        out.convert("RGBA"),
+                        active_device,
+                    ),
+                )
             except Exception as e:
                 self.root.after(0, lambda: self._on_process_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_process_complete(self):
+    def _on_process_complete(self, result, active_device):
+        self.current_image = result
+        self.ai_result_image = self.current_image.copy()
+        self._undo_stack.clear()
+        self._result_version += 1
         self._stop_processing_indicator(success=True)
+        if self._device_info is not None:
+            self._apply_device_status(self._device_info, active_device)
         self._invalidate_render_cache("result")
         self._redraw_all()
         self.status_var.set(
@@ -894,11 +960,27 @@ class BackgroundRemoverGUI:
     # Folder batch
     # ------------------------------------------------------------------
     def _process_folder(self, folder: str):
-        self._start_processing_indicator("Processing folder...")
+        try:
+            remover = self._get_remover()
+        except Exception as error:
+            self.status_var.set(f"Error: {error}")
+            messagebox.showerror(
+                "Processing Error",
+                f"Failed to start folder processing:\n{error}",
+            )
+            return
+        self._start_processing_indicator(
+            "Processing folder...",
+            self._processing_device_for(remover),
+        )
 
         def worker():
             try:
-                remover = self._get_remover()
+                active_device = remover.prepare_session()
+                self.root.after(
+                    0,
+                    lambda: self._on_session_ready(active_device),
+                )
                 from bg_remover.utils import get_image_files
                 image_files = get_image_files(folder)
                 total = len(image_files)
@@ -930,14 +1012,22 @@ class BackgroundRemoverGUI:
                         print(f"Error: {img_path.name}: {e}", file=sys.stderr)
 
                 self.processed_files = results
-                self.root.after(0, lambda: self._on_batch_complete(results))
+                self.root.after(
+                    0,
+                    lambda: self._on_batch_complete(
+                        results,
+                        active_device,
+                    ),
+                )
             except Exception as e:
                 self.root.after(0, lambda: self._on_process_error(str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_batch_complete(self, results: List[Path]):
+    def _on_batch_complete(self, results: List[Path], active_device: str):
         self._stop_processing_indicator(success=True)
+        if self._device_info is not None:
+            self._apply_device_status(self._device_info, active_device)
 
         if results:
             out_dir = results[0].parent
@@ -1211,16 +1301,91 @@ class BackgroundRemoverGUI:
         self._compare_active_drag = False
         self._update_cursor_and_tool_highlight()
 
+    def _on_alt_down(self, _event=None):
+        self._alt_held = True
+        self._update_cursor_and_tool_highlight()
+
+    def _on_alt_up(self, _event=None):
+        self._alt_held = False
+        self._update_cursor_and_tool_highlight()
+
     def _on_space_down(self, _event=None):
         if not self._space_held:
             self._space_held = True
             self._update_cursor_and_tool_highlight()
+        return "break"
 
     def _on_space_up(self, _event=None):
         self._space_held = False
         self._update_cursor_and_tool_highlight()
+        return "break"
+
+    def _on_keyboard_shortcut(self, event):
+        widget_class = event.widget.winfo_class()
+        editable = widget_class in {
+            "Entry",
+            "TEntry",
+            "Text",
+            "Spinbox",
+            "TSpinbox",
+            "TCombobox",
+        }
+        action = resolve_shortcut(
+            event.keysym,
+            control=bool(event.state & 0x0004),
+            shift=bool(event.state & 0x0001),
+            alt=bool(event.state & 0x0008),
+            editable=editable,
+        )
+        if action is None:
+            return None
+
+        if self._is_processing and action not in {
+            "zoom_fit",
+            "zoom_100",
+            "zoom_in",
+            "zoom_out",
+        }:
+            return "break"
+
+        if action.startswith("tool:"):
+            self.selected_tool.set(action.removeprefix("tool:"))
+            self._on_tool_change()
+        elif action == "open_image":
+            self._open_file()
+        elif action == "open_folder":
+            self._open_folder()
+        elif action == "save":
+            self._save_image()
+        elif action == "undo":
+            self._undo()
+        elif action == "process":
+            self._process_image()
+        elif action == "zoom_fit":
+            self._zoom_fit()
+        elif action == "zoom_100":
+            self._zoom_set(1.0)
+        elif action == "zoom_in":
+            self._zoom_at(self._zoom_factor * 1.25, None)
+        elif action == "zoom_out":
+            self._zoom_at(self._zoom_factor / 1.25, None)
+        elif action == "brush_smaller":
+            self._change_brush_size(-6)
+        elif action == "brush_larger":
+            self._change_brush_size(6)
+        return "break"
+
+    def _change_brush_size(self, delta: int):
+        new_size = max(
+            1,
+            min(300, int(self.brush_size.get()) + delta),
+        )
+        self.brush_size.set(new_size)
+        self._on_brush_change()
+        self._redraw_cursor_overlay()
 
     def _on_middle_press(self, event):
+        event.widget.focus_set()
         self._begin_pan(event)
 
     def _on_middle_drag(self, event):
@@ -1786,6 +1951,8 @@ class BackgroundRemoverGUI:
         self._clear_cursor_overlay()
 
     def _on_mouse_down(self, event):
+        event.widget.focus_set()
+
         # 1. Middle mouse button always pans
         if getattr(event, "num", None) == 2:
             self._begin_pan(event)

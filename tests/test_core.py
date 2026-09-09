@@ -12,6 +12,7 @@ from PIL import Image
 from bg_remover.core import BackgroundRemover, AVAILABLE_MODELS, DEFAULT_MODEL, FAST_MODEL
 from bg_remover.cli import create_parser, cmd_remove, cmd_info, cmd_models
 from bg_remover.editing import erase_connected_color, get_drag_sample_points
+from bg_remover.shortcuts import resolve_shortcut
 from bg_remover.utils import (
     get_supported_formats,
     is_supported_format,
@@ -83,6 +84,67 @@ class TestBackgroundRemover:
             assert s1 is mock_session_obj
             assert s2 is mock_session_obj
             assert mock_new_session.call_count == 1
+            assert mock_new_session.call_args.kwargs["providers"] == [
+                "CPUExecutionProvider"
+            ]
+
+    def test_active_device_uses_session_provider(self):
+        """Test the reported device reflects the provider that actually loaded."""
+        remover = BackgroundRemover(device="cuda")
+        mock_session_obj = MagicMock()
+        mock_session_obj.inner_session.get_providers.return_value = [
+            "CPUExecutionProvider"
+        ]
+
+        with (
+            patch("onnxruntime.get_available_providers") as mock_providers,
+            patch("rembg.new_session", return_value=mock_session_obj),
+        ):
+            mock_providers.return_value = [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+            remover._get_session()
+
+        assert remover.active_device == "cpu"
+
+    def test_cuda_session_failure_retries_with_cpu(self):
+        """Test CUDA initialization failures fall back to an explicit CPU session."""
+        remover = BackgroundRemover(device="cuda")
+        cpu_session = MagicMock()
+        cpu_session.inner_session.get_providers.return_value = [
+            "CPUExecutionProvider"
+        ]
+
+        with (
+            patch("onnxruntime.get_available_providers") as mock_providers,
+            patch(
+                "rembg.new_session",
+                side_effect=[RuntimeError("CUDA failed"), cpu_session],
+            ) as mock_new_session,
+        ):
+            mock_providers.return_value = [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+            session = remover._get_session()
+
+        assert session is cpu_session
+        assert remover.active_device == "cpu"
+        assert mock_new_session.call_args_list[1].kwargs["providers"] == [
+            "CPUExecutionProvider"
+        ]
+
+    def test_prepare_session_reports_loaded_provider(self):
+        """Test session preparation reports the provider used for inference."""
+        remover = BackgroundRemover(device="cpu")
+        mock_session_obj = MagicMock()
+        mock_session_obj.inner_session.get_providers.return_value = [
+            "CPUExecutionProvider"
+        ]
+
+        with patch("rembg.new_session", return_value=mock_session_obj):
+            assert remover.prepare_session() == "cpu"
 
     def test_session_cache_disabled(self):
         """Test that session is reloaded when use_cache is False."""
@@ -381,3 +443,76 @@ class TestCLI:
         assert ret == 0
         captured = capsys.readouterr()
         assert "Background Remover - System Info" in captured.out
+
+
+class TestKeyboardShortcuts:
+    """Tests for desktop shortcut resolution."""
+
+    @pytest.mark.parametrize(
+        ("keysym", "action"),
+        [
+            ("x", "tool:eraser"),
+            ("O", "tool:restorer"),
+            ("w", "tool:wand"),
+            ("m", "tool:magic_eraser"),
+            ("C", "tool:compare"),
+            ("h", "tool:pan"),
+        ],
+    )
+    def test_tool_shortcuts_match_toolbar_labels(self, keysym, action):
+        assert resolve_shortcut(
+            keysym,
+            control=False,
+            shift=keysym.isupper(),
+            alt=False,
+            editable=False,
+        ) == action
+
+    def test_typing_in_controls_does_not_change_tools(self):
+        assert resolve_shortcut(
+            "w", control=False, shift=False, alt=False, editable=True
+        ) is None
+        assert resolve_shortcut(
+            "F5", control=False, shift=False, alt=False, editable=True
+        ) == "process"
+
+    @pytest.mark.parametrize(
+        ("keysym", "shift", "action"),
+        [
+            ("o", False, "open_image"),
+            ("O", True, "open_folder"),
+            ("s", False, "save"),
+            ("z", False, "undo"),
+            ("Return", False, "process"),
+            ("0", False, "zoom_fit"),
+            ("1", False, "zoom_100"),
+            ("plus", True, "zoom_in"),
+            ("equal", False, "zoom_in"),
+            ("minus", False, "zoom_out"),
+        ],
+    )
+    def test_standard_control_shortcuts(self, keysym, shift, action):
+        assert resolve_shortcut(
+            keysym,
+            control=True,
+            shift=shift,
+            alt=False,
+            editable=True,
+        ) == action
+
+    @pytest.mark.parametrize(
+        ("keysym", "action"),
+        [
+            ("F5", "process"),
+            ("bracketleft", "brush_smaller"),
+            ("bracketright", "brush_larger"),
+        ],
+    )
+    def test_unmodified_action_shortcuts(self, keysym, action):
+        assert resolve_shortcut(
+            keysym,
+            control=False,
+            shift=False,
+            alt=False,
+            editable=False,
+        ) == action

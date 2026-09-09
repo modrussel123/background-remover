@@ -25,7 +25,12 @@ except ImportError:
     HAS_DND = False
 
 from bg_remover.core import BackgroundRemover, AVAILABLE_MODELS, DEFAULT_MODEL
-from bg_remover.utils import get_device_info, get_file_info, refine_mask_quality
+from bg_remover.editing import erase_connected_color
+from bg_remover.utils import (
+    get_device_info,
+    get_file_info,
+    refine_mask_quality,
+)
 
 
 TOOL_ERASER = "eraser"
@@ -100,8 +105,6 @@ class BackgroundRemoverGUI:
         self._undo_stack: List[Image.Image] = []
         self._max_undo = 20
         self._wand_mode = False  # legacy compat flag
-        # Magic Eraser seed color (captured at mouse-down, used throughout stroke)
-        self._magic_eraser_seed: Optional[Tuple[int, int, int]] = None
         # Fast in-memory array & redraw throttling for lag-free painting
         self._active_alpha: Optional[np.ndarray] = None
         self._active_rgb: Optional[np.ndarray] = None
@@ -1524,7 +1527,6 @@ class BackgroundRemoverGUI:
         tool = self.selected_tool.get()
         if tool != TOOL_COMPARE:
             self._exit_compare_mode()
-        self._magic_eraser_seed = None  # reset seed on every tool switch
         self._update_cursor_and_tool_highlight()
         self._redraw_cursor_overlay()
         if tool == TOOL_WAND:
@@ -1537,7 +1539,8 @@ class BackgroundRemoverGUI:
             self.status_var.set("Restorer: paint to restore pixels from the original image.")
         elif tool == TOOL_MAGIC_ERASER:
             self.status_var.set(
-                f"Magic Eraser: drag near edges to erase background — automatically detects & protects object edges (Tol={int(self.wand_tolerance.get())})."
+                f"Magic Eraser: drag over an unwanted color to erase its connected pixels "
+                f"inside the brush (Tol={int(self.wand_tolerance.get())})."
             )
         elif tool == TOOL_COMPARE:
             self.status_var.set("Compare: drag on Result to slide before/after comparison.")
@@ -1839,22 +1842,6 @@ class BackgroundRemoverGUI:
             else:
                 self._active_orig_rgb = None
 
-            if tool == TOOL_MAGIC_ERASER:
-                pt = self._canvas_to_image_coords(
-                    self.canvas_result, event.x, event.y, self.current_image)
-                if pt is not None:
-                    px, py = pt
-                    w, h = self.current_image.size
-                    if 0 <= px < w and 0 <= py < h:
-                        if self._active_orig_rgb is not None:
-                            self._magic_eraser_seed = tuple(int(c) for c in self._active_orig_rgb[py, px])
-                        else:
-                            self._magic_eraser_seed = tuple(int(c) for c in self._active_rgb[py, px])
-                    else:
-                        self._magic_eraser_seed = None
-                else:
-                    self._magic_eraser_seed = None
-
             self._draw_stroke(event, single=True)
             self._cursor_canvas_pos = (event.x, event.y)
             self._redraw_cursor_overlay()
@@ -1927,13 +1914,13 @@ class BackgroundRemoverGUI:
                 if tool == TOOL_ERASER:
                     action = "Erased"
                 elif tool == TOOL_MAGIC_ERASER:
-                    action = "Magic Erased (Edge-Aware)"
+                    action = "Magic Erased (Color-Aware)"
                 else:
                     action = "Restored"
                 self.status_var.set(f"{action} — save when done. (Undo to revert)")
 
     # ------------------------------------------------------------------
-    # Zero-lag brush stroke engine & Edge-Aware Magic Eraser
+    # Zero-lag brush stroke engine & Color-Aware Magic Eraser
     # ------------------------------------------------------------------
     def _request_draw_redraw(self):
         """Throttle screen updates during active drawing to ~60 FPS."""
@@ -2027,95 +2014,26 @@ class BackgroundRemoverGUI:
             self._apply_magic_eraser_dot(pt, size)
 
     def _apply_magic_eraser_dot(self, pt, size):
-        """Edge-aware magic eraser.
-
-        Detects image edges within the brush radius using Sobel gradients
-        and flood-fills from the seed/center point using OpenCV. Erases only
-        pixels matching the background color while stopping strictly at
-        object edges/contours.
-        """
+        """Erase the connected color sampled beneath the brush."""
         if self._active_alpha is None:
             return
 
-        px, py = pt
-        h, w = self._active_alpha.shape
-        if px < 0 or px >= w or py < 0 or py >= h:
-            return
-
-        r = max(2, size // 2)
-        x0, y0 = max(0, px - r), max(0, py - r)
-        x1, y1 = min(w, px + r + 1), min(h, py + r + 1)
-        if x0 >= x1 or y0 >= y1:
-            return
-
-        tol = int(self.wand_tolerance.get())
-
-        color_src = self._active_orig_rgb if self._active_orig_rgb is not None else self._active_rgb
+        color_src = (
+            self._active_orig_rgb
+            if self._active_orig_rgb is not None
+            else self._active_rgb
+        )
         if color_src is None:
             color_src = np.array(self.current_image.convert("RGB"), dtype=np.uint8)
             self._active_rgb = color_src
 
-        patch_rgb = color_src[y0:y1, x0:x1]
-        patch_alpha = self._active_alpha[y0:y1, x0:x1]
-
-        pw = x1 - x0
-        ph = y1 - y0
-        lx = px - x0
-        ly = py - y0
-
-        # Dynamic seed selection:
-        # If brush center matches background seed within tolerance, use it (handles smooth bg gradients).
-        # If brush center slips onto the foreground subject, preserve the background seed so the subject isn't sampled.
-        center_col = patch_rgb[ly, lx]
-        if self._magic_eraser_seed is not None:
-            c_dist = int(np.max(np.abs(center_col.astype(np.int32) - np.array(self._magic_eraser_seed, dtype=np.int32))))
-            if c_dist <= tol:
-                seed_rgb = tuple(int(c) for c in center_col)
-            else:
-                seed_rgb = self._magic_eraser_seed
-        else:
-            seed_rgb = tuple(int(c) for c in center_col)
-            self._magic_eraser_seed = seed_rgb
-
-        # 1. Circular brush mask
-        yy, xx = np.ogrid[:ph, :pw]
-        circle_mask = ((xx - lx) ** 2 + (yy - ly) ** 2 <= r ** 2)
-
-        # 2. Edge barrier detection via Sobel gradients
-        gray = cv2.cvtColor(patch_rgb, cv2.COLOR_RGB2GRAY)
-        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-        grad_x = cv2.Sobel(blurred, cv2.CV_16S, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(blurred, cv2.CV_16S, 0, 1, ksize=3)
-        grad_mag = np.abs(grad_x) + np.abs(grad_y)
-
-        edge_thresh = max(40, 255 - int(tol * 2.5))
-        edge_barrier = (grad_mag > edge_thresh).astype(np.uint8)
-
-        # 3. Flood-fill mask with edge barrier boundaries
-        ff_mask = np.zeros((ph + 2, pw + 2), dtype=np.uint8)
-        ff_mask[1:-1, 1:-1] = edge_barrier
-        ff_mask[ly + 1, lx + 1] = 0  # ensure seed is open
-
-        patch_copy = patch_rgb.copy()
-        cv2.floodFill(
-            patch_copy, ff_mask, (lx, ly),
-            newVal=(0, 0, 0),
-            loDiff=(tol, tol, tol),
-            upDiff=(tol, tol, tol),
-            flags=4 | cv2.FLOODFILL_MASK_ONLY | (255 << 8)
+        erase_connected_color(
+            self._active_alpha,
+            color_src,
+            pt,
+            max(2, size // 2),
+            int(self.wand_tolerance.get()),
         )
-
-        filled = (ff_mask[1:-1, 1:-1] == 255)
-        # Erase pixels that are: inside circular brush, connected by floodFill, and NOT on the detected edge barrier
-        erase_mask = filled & circle_mask & (edge_barrier == 0) & (patch_alpha > 0)
-
-        # If floodfill didn't reach anything (e.g. seed was on a transparent or already erased border),
-        # fallback to color-distance matching strictly bounded by the edge barrier:
-        if np.sum(erase_mask) == 0:
-            diff_map = np.max(np.abs(patch_rgb.astype(np.int32) - np.array(seed_rgb, dtype=np.int32)), axis=2)
-            erase_mask = (diff_map <= tol) & circle_mask & (edge_barrier == 0) & (patch_alpha > 0)
-
-        patch_alpha[erase_mask] = 0
 
     # ------------------------------------------------------------------
     # Legacy wand-mode helpers (wand is now a radio-button tool; these

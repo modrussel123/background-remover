@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bg-remover"
+version = "1.0.0"
+description = "High-quality AI background remover with GPU acceleration"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "BG Remover"}
+]
+keywords = ["background", "removal", "image", "ai", "gpu", "birefnet"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Graphics :: Graphics Converters",
+]
+
+dependencies = [
+    "rembg>=2.0.81",
+    "Pillow>=10.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "onnxruntime-gpu>=1.20",
+]
+gui = [
+    "tkinterdnd2>=0.3.0",
+]
+all = [
+    "rembg[gpu]>=2.0.81",
+    "onnxruntime-gpu>=1.20",
+    "tkinterdnd2>=0.3.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+bgremover = "bg_remover.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/bg-remover"
+Issues = "https://github.com/yourusername/bg-remover/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"

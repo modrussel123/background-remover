@@ -59,8 +59,9 @@ def erase_connected_color(
     center: tuple[int, int],
     radius: int,
     tolerance: int,
+    contact_radius: int = 0,
 ) -> int:
-    """Erase the connected color region under a circular brush."""
+    """Erase a connected color region plus a centered contact area."""
     px, py = center
     height, width = alpha.shape
     if px < 0 or px >= width or py < 0 or py >= height:
@@ -68,6 +69,7 @@ def erase_connected_color(
 
     radius = max(1, int(radius))
     tolerance = max(0, min(255, int(tolerance)))
+    contact_radius = max(0, min(radius, int(contact_radius)))
     x0, y0 = max(0, px - radius), max(0, py - radius)
     x1, y1 = min(width, px + radius + 1), min(height, py + radius + 1)
 
@@ -98,7 +100,14 @@ def erase_connected_color(
         ),
     )
 
-    erase_mask = (flood_mask[1:-1, 1:-1] == 255) & (patch_alpha > 0)
+    erase_mask = flood_mask[1:-1, 1:-1] == 255
+    if contact_radius:
+        direct_contact = (
+            (xx - local_x) ** 2 + (yy - local_y) ** 2
+            <= contact_radius ** 2
+        )
+        erase_mask |= direct_contact
+    erase_mask &= patch_alpha > 0
     erased = int(np.count_nonzero(erase_mask))
     patch_alpha[erase_mask] = 0
     return erased

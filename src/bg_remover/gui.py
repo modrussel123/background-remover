@@ -1540,7 +1540,8 @@ class BackgroundRemoverGUI:
         elif tool == TOOL_MAGIC_ERASER:
             self.status_var.set(
                 f"Magic Eraser: drag over an unwanted color to erase its connected pixels "
-                f"inside the brush (Tol={int(self.wand_tolerance.get())})."
+                f"inside the brush; center directly on contours to erase them "
+                f"(Tol={int(self.wand_tolerance.get())})."
             )
         elif tool == TOOL_COMPARE:
             self.status_var.set("Compare: drag on Result to slide before/after comparison.")
@@ -2045,6 +2046,7 @@ class BackgroundRemoverGUI:
             pt,
             max(2, size // 2),
             int(self.wand_tolerance.get()),
+            max(1, size // 8),
         )
 
     # ------------------------------------------------------------------

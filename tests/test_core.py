@@ -250,6 +250,44 @@ class TestUtils:
         assert np.all(alpha[diagonal[2:7], diagonal[2:7]] == 0)
         assert alpha[4, 3] == 255
 
+    def test_direct_contact_erases_multicolor_contours(self):
+        """Test the centered contact area removes a deliberately covered contour."""
+        alpha = np.full((11, 11), 255, dtype=np.uint8)
+        rgb = np.full((11, 11, 3), (245, 245, 245), dtype=np.uint8)
+        rgb[5, 2:9:2] = (10, 10, 10)
+        rgb[5, 3:9:2] = (100, 100, 100)
+
+        erase_connected_color(
+            alpha,
+            rgb,
+            (5, 5),
+            radius=4,
+            tolerance=0,
+            contact_radius=2,
+        )
+
+        assert np.all(alpha[5, 3:8] == 0)
+        assert alpha[5, 2] == 255
+        assert alpha[5, 8] == 255
+
+    def test_direct_contact_preserves_nearby_contours(self):
+        """Test contrasting boundaries outside the contact area remain protected."""
+        alpha = np.full((15, 15), 255, dtype=np.uint8)
+        rgb = np.full((15, 15, 3), (245, 245, 245), dtype=np.uint8)
+        rgb[:, 8] = (10, 10, 10)
+
+        erase_connected_color(
+            alpha,
+            rgb,
+            (5, 7),
+            radius=5,
+            tolerance=0,
+            contact_radius=1,
+        )
+
+        assert alpha[7, 5] == 0
+        assert np.all(alpha[:, 8] == 255)
+
     def test_refine_mask_quality(self):
         """Test edge smoothing, defringing, and stray noise cleanup."""
         img = Image.new("RGBA", (100, 100), (255, 100, 50, 255))

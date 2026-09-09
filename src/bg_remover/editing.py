@@ -5,6 +5,54 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+def get_drag_sample_points(
+    rgb: NDArray[np.uint8],
+    start: tuple[int, int],
+    end: tuple[int, int],
+    tolerance: int,
+    spacing: int,
+) -> list[tuple[int, int]]:
+    """Sample a drag regularly and whenever its color changes."""
+    height, width = rgb.shape[:2]
+    x0, y0 = start
+    x1, y1 = end
+    distance = max(abs(x1 - x0), abs(y1 - y0))
+    tolerance = max(0, min(255, int(tolerance)))
+    spacing = max(1, int(spacing))
+
+    points: list[tuple[int, int]] = []
+    last_point: tuple[int, int] | None = None
+    last_sample_color: NDArray[np.int16] | None = None
+    last_sample_index = -spacing
+
+    for index in range(distance + 1):
+        ratio = index / distance if distance else 0
+        point = (
+            round(x0 + (x1 - x0) * ratio),
+            round(y0 + (y1 - y0) * ratio),
+        )
+        if point == last_point:
+            continue
+        last_point = point
+
+        px, py = point
+        if px < 0 or px >= width or py < 0 or py >= height:
+            continue
+
+        color = rgb[py, px].astype(np.int16)
+        color_changed = (
+            last_sample_color is not None
+            and int(np.max(np.abs(color - last_sample_color))) > tolerance
+        )
+        regularly_spaced = index - last_sample_index >= spacing
+        if not points or color_changed or regularly_spaced or index == distance:
+            points.append(point)
+            last_sample_color = color
+            last_sample_index = index
+
+    return points
+
+
 def erase_connected_color(
     alpha: NDArray[np.uint8],
     rgb: NDArray[np.uint8],
@@ -43,7 +91,7 @@ def erase_connected_color(
         loDiff=(tolerance, tolerance, tolerance),
         upDiff=(tolerance, tolerance, tolerance),
         flags=(
-            4
+            8
             | cv2.FLOODFILL_FIXED_RANGE
             | cv2.FLOODFILL_MASK_ONLY
             | (255 << 8)

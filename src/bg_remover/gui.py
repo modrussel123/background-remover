@@ -25,7 +25,7 @@ except ImportError:
     HAS_DND = False
 
 from bg_remover.core import BackgroundRemover, AVAILABLE_MODELS, DEFAULT_MODEL
-from bg_remover.editing import erase_connected_color
+from bg_remover.editing import erase_connected_color, get_drag_sample_points
 from bg_remover.utils import (
     get_device_info,
     get_file_info,
@@ -1984,15 +1984,27 @@ class BackgroundRemoverGUI:
                 where_m = (line_mask > 0)
                 self._active_rgb[where_m] = self._active_orig_rgb[where_m]
         elif tool == TOOL_MAGIC_ERASER:
-            x0, y0 = p0
-            x1, y1 = p1
-            dist = int(((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5)
-            step = max(2, size // 4)
-            steps = max(1, dist // step)
-            for t in range(steps + 1):
-                px = int(x0 + (x1 - x0) * t / steps)
-                py = int(y0 + (y1 - y0) * t / steps)
-                self._apply_magic_eraser_dot((px, py), size)
+            color_src = (
+                self._active_orig_rgb
+                if self._active_orig_rgb is not None
+                else self._active_rgb
+            )
+            if color_src is None:
+                color_src = np.array(
+                    self.current_image.convert("RGB"),
+                    dtype=np.uint8,
+                )
+                self._active_rgb = color_src
+
+            points = get_drag_sample_points(
+                color_src,
+                p0,
+                p1,
+                int(self.wand_tolerance.get()),
+                max(2, size // 4),
+            )
+            for point in points:
+                self._apply_magic_eraser_dot(point, size)
 
     def _apply_brush_dot(self, pt, size, tool):
         if self._active_alpha is None:

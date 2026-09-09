@@ -11,7 +11,7 @@ from PIL import Image
 
 from bg_remover.core import BackgroundRemover, AVAILABLE_MODELS, DEFAULT_MODEL, FAST_MODEL
 from bg_remover.cli import create_parser, cmd_remove, cmd_info, cmd_models
-from bg_remover.editing import erase_connected_color
+from bg_remover.editing import erase_connected_color, get_drag_sample_points
 from bg_remover.utils import (
     get_supported_formats,
     is_supported_format,
@@ -219,6 +219,36 @@ class TestUtils:
         assert alpha[4, 2] == 0
         assert erased_edge == 7
         assert np.all(alpha[1:8, 4] == 0)
+
+    def test_drag_sampling_captures_thin_color_transitions(self):
+        """Test a fast drag still samples a one-pixel contour."""
+        rgb = np.full((5, 11, 3), (30, 80, 180), dtype=np.uint8)
+        rgb[:, 5] = (245, 245, 245)
+
+        points = get_drag_sample_points(
+            rgb,
+            (0, 2),
+            (10, 2),
+            tolerance=20,
+            spacing=6,
+        )
+
+        assert (5, 2) in points
+        assert (6, 2) in points
+        assert points[-1] == (10, 2)
+
+    def test_erase_connected_color_follows_diagonal_contours(self):
+        """Test diagonally connected line pixels erase as one region."""
+        alpha = np.full((9, 9), 255, dtype=np.uint8)
+        rgb = np.full((9, 9, 3), (30, 80, 180), dtype=np.uint8)
+        diagonal = np.arange(9)
+        rgb[diagonal, diagonal] = (245, 245, 245)
+
+        erased = erase_connected_color(alpha, rgb, (4, 4), radius=4, tolerance=0)
+
+        assert erased == 5
+        assert np.all(alpha[diagonal[2:7], diagonal[2:7]] == 0)
+        assert alpha[4, 3] == 255
 
     def test_refine_mask_quality(self):
         """Test edge smoothing, defringing, and stray noise cleanup."""

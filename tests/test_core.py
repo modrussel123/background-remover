@@ -1,15 +1,17 @@
 """Tests for the background remover core module."""
 
 import tempfile
-import pytest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from io import BytesIO
 
+import numpy as np
+import pytest
 from PIL import Image
 
 from bg_remover.core import BackgroundRemover, AVAILABLE_MODELS, DEFAULT_MODEL, FAST_MODEL
 from bg_remover.cli import create_parser, cmd_remove, cmd_info, cmd_models
+from bg_remover.editing import erase_connected_color, get_drag_sample_points
 from bg_remover.utils import (
     get_supported_formats,
     is_supported_format,
@@ -177,6 +179,114 @@ class TestUtils:
         p2 = dark_img.getpixel((6, 0))
         assert p1 != p2
         assert p1[0] < 50 and p2[0] < 50  # Darkish tones
+
+    def test_erase_connected_color_stays_inside_circular_brush(self):
+        """Test color erasing respects the circular brush boundary."""
+        alpha = np.full((9, 9), 255, dtype=np.uint8)
+        rgb = np.full((9, 9, 3), (20, 40, 60), dtype=np.uint8)
+        rgb[4, 5] = (25, 45, 65)
+        rgb[4, 6] = (26, 46, 66)
+
+        erased = erase_connected_color(alpha, rgb, (4, 4), radius=2, tolerance=5)
+
+        assert erased == 12
+        assert alpha[4, 4] == 0
+        assert alpha[4, 5] == 0
+        assert alpha[4, 6] == 255
+        assert alpha[4, 7] == 255
+
+    def test_erase_connected_color_matches_magic_wand_connectivity(self):
+        """Test disconnected matching colors are not erased together."""
+        alpha = np.full((7, 7), 255, dtype=np.uint8)
+        rgb = np.full((7, 7, 3), (200, 30, 20), dtype=np.uint8)
+        rgb[:, 3] = (10, 200, 40)
+
+        erased = erase_connected_color(alpha, rgb, (1, 3), radius=10, tolerance=0)
+
+        assert erased == 21
+        assert np.all(alpha[:, :3] == 0)
+        assert np.all(alpha[:, 3:] == 255)
+
+    def test_erase_connected_color_resamples_visible_edges(self):
+        """Test dragging onto a new edge color erases that color too."""
+        alpha = np.full((9, 9), 255, dtype=np.uint8)
+        rgb = np.full((9, 9, 3), (30, 80, 180), dtype=np.uint8)
+        rgb[:, 4] = (245, 245, 245)
+
+        erase_connected_color(alpha, rgb, (2, 4), radius=2, tolerance=0)
+        erased_edge = erase_connected_color(alpha, rgb, (4, 4), radius=3, tolerance=0)
+
+        assert alpha[4, 2] == 0
+        assert erased_edge == 7
+        assert np.all(alpha[1:8, 4] == 0)
+
+    def test_drag_sampling_captures_thin_color_transitions(self):
+        """Test a fast drag still samples a one-pixel contour."""
+        rgb = np.full((5, 11, 3), (30, 80, 180), dtype=np.uint8)
+        rgb[:, 5] = (245, 245, 245)
+
+        points = get_drag_sample_points(
+            rgb,
+            (0, 2),
+            (10, 2),
+            tolerance=20,
+            spacing=6,
+        )
+
+        assert (5, 2) in points
+        assert (6, 2) in points
+        assert points[-1] == (10, 2)
+
+    def test_erase_connected_color_follows_diagonal_contours(self):
+        """Test diagonally connected line pixels erase as one region."""
+        alpha = np.full((9, 9), 255, dtype=np.uint8)
+        rgb = np.full((9, 9, 3), (30, 80, 180), dtype=np.uint8)
+        diagonal = np.arange(9)
+        rgb[diagonal, diagonal] = (245, 245, 245)
+
+        erased = erase_connected_color(alpha, rgb, (4, 4), radius=4, tolerance=0)
+
+        assert erased == 5
+        assert np.all(alpha[diagonal[2:7], diagonal[2:7]] == 0)
+        assert alpha[4, 3] == 255
+
+    def test_direct_contact_erases_multicolor_contours(self):
+        """Test the centered contact area removes a deliberately covered contour."""
+        alpha = np.full((11, 11), 255, dtype=np.uint8)
+        rgb = np.full((11, 11, 3), (245, 245, 245), dtype=np.uint8)
+        rgb[5, 2:9:2] = (10, 10, 10)
+        rgb[5, 3:9:2] = (100, 100, 100)
+
+        erase_connected_color(
+            alpha,
+            rgb,
+            (5, 5),
+            radius=4,
+            tolerance=0,
+            contact_radius=2,
+        )
+
+        assert np.all(alpha[5, 3:8] == 0)
+        assert alpha[5, 2] == 255
+        assert alpha[5, 8] == 255
+
+    def test_direct_contact_preserves_nearby_contours(self):
+        """Test contrasting boundaries outside the contact area remain protected."""
+        alpha = np.full((15, 15), 255, dtype=np.uint8)
+        rgb = np.full((15, 15, 3), (245, 245, 245), dtype=np.uint8)
+        rgb[:, 8] = (10, 10, 10)
+
+        erase_connected_color(
+            alpha,
+            rgb,
+            (5, 7),
+            radius=5,
+            tolerance=0,
+            contact_radius=1,
+        )
+
+        assert alpha[7, 5] == 0
+        assert np.all(alpha[:, 8] == 255)
 
     def test_refine_mask_quality(self):
         """Test edge smoothing, defringing, and stray noise cleanup."""

@@ -538,6 +538,20 @@ class BackgroundRemoverGUI:
         self.root.bind("<KeyPress-Alt_R>", self._on_alt_down)
         self.root.bind("<KeyRelease-Alt_R>", self._on_alt_up)
         self.root.bind("<KeyPress>", self._on_keyboard_shortcut, add="+")
+        
+        # Fallback direct tool shortcuts for maximum compatibility
+        self.root.bind("<Key-x>", lambda e: (self._set_tool_direct(TOOL_ERASER), "break"))
+        self.root.bind("<Key-X>", lambda e: (self._set_tool_direct(TOOL_ERASER), "break"))
+        self.root.bind("<Key-o>", lambda e: (self._set_tool_direct(TOOL_RESTORER), "break"))
+        self.root.bind("<Key-O>", lambda e: (self._set_tool_direct(TOOL_RESTORER), "break"))
+        self.root.bind("<Key-w>", lambda e: (self._set_tool_direct(TOOL_WAND), "break"))
+        self.root.bind("<Key-W>", lambda e: (self._set_tool_direct(TOOL_WAND), "break"))
+        self.root.bind("<Key-m>", lambda e: (self._set_tool_direct(TOOL_MAGIC_ERASER), "break"))
+        self.root.bind("<Key-M>", lambda e: (self._set_tool_direct(TOOL_MAGIC_ERASER), "break"))
+        self.root.bind("<Key-c>", lambda e: (self._set_tool_direct(TOOL_COMPARE), "break"))
+        self.root.bind("<Key-C>", lambda e: (self._set_tool_direct(TOOL_COMPARE), "break"))
+        self.root.bind("<Key-h>", lambda e: (self._set_tool_direct(TOOL_PAN), "break"))
+        self.root.bind("<Key-H>", lambda e: (self._set_tool_direct(TOOL_PAN), "break"))
 
     def _center_window(self):
         self.root.update_idletasks()
@@ -1320,6 +1334,13 @@ class BackgroundRemoverGUI:
         self._update_cursor_and_tool_highlight()
         return "break"
 
+    def _set_tool_direct(self, tool_name: str):
+        """Direct tool setter for fallback keyboard shortcuts."""
+        if self._is_processing:
+            return
+        self.selected_tool.set(tool_name)
+        self._on_tool_change()
+
     def _on_keyboard_shortcut(self, event):
         widget_class = event.widget.winfo_class()
         editable = widget_class in {
@@ -1330,9 +1351,13 @@ class BackgroundRemoverGUI:
             "TSpinbox",
             "TCombobox",
         }
+        
+        # More robust Ctrl key detection - check multiple state bits
+        ctrl = bool(event.state & 0x0004) or bool(event.state & 0x10000)
+        
         action = resolve_shortcut(
             event.keysym,
-            control=bool(event.state & 0x0004),
+            control=ctrl,
             shift=bool(event.state & 0x0001),
             alt=bool(event.state & 0x0008),
             editable=editable,

@@ -140,7 +140,10 @@ class BackgroundRemover:
             if self._device == "cuda":
                 self._setup_cuda_paths()
 
-            session_kwargs = {"model_name": self.model_name}
+            session_kwargs = {
+                "model_name": self.model_name,
+                "providers": ["CPUExecutionProvider"],
+            }
 
             if self._device == "cuda":
                 try:
@@ -155,10 +158,33 @@ class BackgroundRemover:
                     print(f"CUDA provider check failed: {e}, falling back to CPU", file=sys.stderr)
                     self._device = "cpu"
 
-            self._session = rembg.new_session(**session_kwargs)
+            try:
+                self._session = rembg.new_session(**session_kwargs)
+            except Exception as error:
+                if self._device != "cuda":
+                    raise
+                print(
+                    f"CUDA session initialization failed: {error}, "
+                    "falling back to CPU",
+                    file=sys.stderr,
+                )
+                self._device = "cpu"
+                session_kwargs["providers"] = ["CPUExecutionProvider"]
+                self._session = rembg.new_session(**session_kwargs)
+            active_providers = self._session.inner_session.get_providers()
+            self._device = (
+                "cuda"
+                if "CUDAExecutionProvider" in active_providers
+                else "cpu"
+            )
             self._last_used = time.time()
 
         return self._session
+
+    @property
+    def active_device(self) -> str:
+        """Return the compute device used by the current model session."""
+        return self._device
 
     def remove_background(
         self,

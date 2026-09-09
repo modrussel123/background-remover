@@ -135,6 +135,17 @@ class TestBackgroundRemover:
             "CPUExecutionProvider"
         ]
 
+    def test_prepare_session_reports_loaded_provider(self):
+        """Test session preparation reports the provider used for inference."""
+        remover = BackgroundRemover(device="cpu")
+        mock_session_obj = MagicMock()
+        mock_session_obj.inner_session.get_providers.return_value = [
+            "CPUExecutionProvider"
+        ]
+
+        with patch("rembg.new_session", return_value=mock_session_obj):
+            assert remover.prepare_session() == "cpu"
+
     def test_session_cache_disabled(self):
         """Test that session is reloaded when use_cache is False."""
         remover = BackgroundRemover(device="cpu", use_cache=False)

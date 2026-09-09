@@ -728,6 +728,25 @@ class BackgroundRemoverGUI:
         if self._device_info is not None:
             self._apply_device_status(self._device_info)
 
+    def _processing_device_for(self, remover):
+        device = remover.active_device
+        if (
+            device == "cuda"
+            and self._device_info is not None
+            and not self._device_info["cuda_available"]
+        ):
+            return "cpu"
+        return device
+
+    def _on_session_ready(self, active_device):
+        if not self._is_processing:
+            return
+        self._processing_device = (
+            "GPU (CUDA)" if active_device == "cuda" else "CPU"
+        )
+        if self._device_info is not None:
+            self._apply_device_status(self._device_info, active_device)
+
     def _on_model_change(self, _event=None):
         """Update model description label when user picks a different model."""
         model = self.model_var.get()
@@ -869,17 +888,22 @@ class BackgroundRemoverGUI:
             return
         self._start_processing_indicator(
             "Processing with AI...",
-            remover.active_device,
+            self._processing_device_for(remover),
         )
 
         def worker():
             try:
+                active_device = remover.prepare_session()
+                self.root.after(
+                    0,
+                    lambda: self._on_session_ready(active_device),
+                )
                 out = remover.remove_background(self.current_file)
                 self.root.after(
                     0,
                     lambda: self._on_process_complete(
                         out.convert("RGBA"),
-                        remover.active_device,
+                        active_device,
                     ),
                 )
             except Exception as e:
@@ -947,11 +971,16 @@ class BackgroundRemoverGUI:
             return
         self._start_processing_indicator(
             "Processing folder...",
-            remover.active_device,
+            self._processing_device_for(remover),
         )
 
         def worker():
             try:
+                active_device = remover.prepare_session()
+                self.root.after(
+                    0,
+                    lambda: self._on_session_ready(active_device),
+                )
                 from bg_remover.utils import get_image_files
                 image_files = get_image_files(folder)
                 total = len(image_files)
@@ -987,7 +1016,7 @@ class BackgroundRemoverGUI:
                     0,
                     lambda: self._on_batch_complete(
                         results,
-                        remover.active_device,
+                        active_device,
                     ),
                 )
             except Exception as e:

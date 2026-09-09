@@ -186,6 +186,11 @@ class BackgroundRemover:
         """Return the compute device used by the current model session."""
         return self._device
 
+    def prepare_session(self) -> str:
+        """Load the model session and return its active compute device."""
+        self._get_session()
+        return self.active_device
+
     def remove_background(
         self,
         input_image: Union[str, Path, Image.Image],
